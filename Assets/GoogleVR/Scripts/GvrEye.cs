@@ -88,48 +88,7 @@ public class GvrEye : MonoBehaviour {
     // Save reference to the found controller and it's camera.
     controller = ctlr;
     monoCamera = controller.GetComponent<Camera>();
-    UpdateStereoValues();
-  }
-
-  private void FixProjection(ref Matrix4x4 proj) {
-    // Adjust for non-fullscreen camera.  GvrViewer assumes fullscreen,
-    // so the aspect ratio might not match.
-    proj[0, 0] *= cam.rect.height / cam.rect.width / 2;
-
-    // GvrViewer had to pass "nominal" values of near/far to the native layer, which
-    // we fix here to match our mono camera's specific values.
-    float near = monoCamera.nearClipPlane;
-    float far = monoCamera.farClipPlane;
-    proj[2, 2] = (near + far) / (near - far);
-    proj[2, 3] = 2 * near * far / (near - far);
-  }
-
-  private Rect FixViewport(Rect rect) {
-    // We are rendering straight to the screen.  Use the reported rect that is visible
-    // through the device's lenses.
-    Rect view = GvrViewer.Instance.Viewport(eye);
-    if (eye == GvrViewer.Eye.Right) {
-      rect.x -= 0.5f;
-    }
-    rect.width *= 2 * view.width;
-    rect.x = view.x + 2 * rect.x * view.width;
-    rect.height *= view.height;
-    rect.y = view.y + rect.y * view.height;
-    if (Application.isEditor) {
-      // The Game window's aspect ratio may not match the fake device parameters.
-      float realAspect = (float)Screen.width / Screen.height;
-      float fakeAspect = GvrViewer.Instance.Profile.screen.width / GvrViewer.Instance.Profile.screen.height;
-      float aspectComparison = fakeAspect / realAspect;
-      if (aspectComparison < 1) {
-        rect.width *= aspectComparison;
-        rect.x *= aspectComparison;
-        rect.x += (1 - aspectComparison) / 2;
-      } else {
-        rect.height /= aspectComparison;
-        rect.y /= aspectComparison;
-      }
-    }
-    return rect;
+    SetupStereo(/*forceUpdate=*/true);
   }
 
   public void UpdateStereoValues() {
@@ -139,16 +98,16 @@ public class GvrEye : MonoBehaviour {
     CopyCameraAndMakeSideBySide(controller, proj[0, 2], proj[1, 2]);
 
     // Fix aspect ratio and near/far clipping planes.
-    FixProjection(ref proj);
-    FixProjection(ref realProj);
+    float nearClipPlane = monoCamera.nearClipPlane;
+    float farClipPlane = monoCamera.farClipPlane;
+
+    GvrCameraUtils.FixProjection(cam.rect, nearClipPlane, farClipPlane, ref proj);
+    GvrCameraUtils.FixProjection(cam.rect, nearClipPlane, farClipPlane, ref realProj);
 
     // Zoom the stereo cameras if requested.
-    float lerp = Mathf.Clamp01(controller.matchByZoom) * Mathf.Clamp01(controller.matchMonoFOV);
-    // Lerping the reciprocal of proj(1,1), so zoom is linear in frustum height not the depth.
     float monoProj11 = monoCamera.projectionMatrix[1, 1];
-    float zoom = 1 / Mathf.Lerp(1 / proj[1, 1], 1 / monoProj11, lerp) / proj[1, 1];
-    proj[0, 0] *= zoom;
-    proj[1, 1] *= zoom;
+    GvrCameraUtils.ZoomStereoCameras(controller.matchByZoom, controller.matchMonoFOV,
+                                     monoProj11, ref proj);
 
     // Set the eye camera's projection for rendering.
     cam.projectionMatrix = proj;
@@ -162,28 +121,38 @@ public class GvrEye : MonoBehaviour {
     if (cam.targetTexture == null) {
       // When drawing straight to screen, account for lens FOV limits.
       // Note: do this after all calls to FixProjection() which needs the unfixed rect.
-      cam.rect = FixViewport(cam.rect);
+      Rect viewport = GvrViewer.Instance.Viewport(eye);
+      bool isRightEye = eye == GvrViewer.Eye.Right;
+      cam.rect = GvrCameraUtils.FixViewport(cam.rect, viewport, isRightEye);
+
+      // The game window's aspect ratio may not match the device profile parameters.
+      if (Application.isEditor) {
+        GvrProfile.Screen profileScreen = GvrViewer.Instance.Profile.screen;
+        float profileAspect = profileScreen.width / profileScreen.height;
+        float windowAspect = (float)Screen.width / Screen.height;
+        cam.rect = GvrCameraUtils.FixEditorViewport(cam.rect, profileAspect, windowAspect);
+      }
     }
   }
 
-  private void SetupStereo() {
+  private void SetupStereo(bool forceUpdate) {
     GvrViewer.Instance.UpdateState();
+
+    bool updateValues = forceUpdate  // Being called from Start(), most likely.
+        || controller.keepStereoUpdated  // Parent camera may be animating.
+        || GvrViewer.Instance.ProfileChanged  // New QR code.
+        || cam.targetTexture == null
+            && GvrViewer.Instance.StereoScreen != null ;  // Need to (re)assign targetTexture.
+    if (updateValues) {
+      // Set projection, viewport and targetTexture.
+      UpdateStereoValues();
+    }
 
     // Will need to update view transform if there is a COI, or if there is a remnant of
     // prior stereo-adjustment smoothing to finish off.
     bool haveCOI = controller.centerOfInterest != null
         && controller.centerOfInterest.gameObject.activeInHierarchy;
-    bool updatePosition = haveCOI || interpPosition < 1;
-
-    if (controller.keepStereoUpdated || GvrViewer.Instance.ProfileChanged
-        || cam.targetTexture == null && GvrViewer.Instance.StereoScreen != null) {
-      // Set projection and viewport.
-      UpdateStereoValues();
-      // Also view transform.
-      updatePosition = true;
-    }
-
-    if (updatePosition) {
+    if (updateValues || haveCOI || interpPosition < 1) {
       // Set view transform.
       float proj11 = cam.projectionMatrix[1, 1];
       float zScale = transform.lossyScale.z;
@@ -214,7 +183,7 @@ public class GvrEye : MonoBehaviour {
       cam.enabled = false;
       return;
     }
-    SetupStereo();
+    SetupStereo(/*forceUpdate=*/false);
     if (!controller.directRender && GvrViewer.Instance.StereoScreen != null) {
       // Some image effects clobber the whole screen.  Add a final image effect to the chain
       // which restores side-by-side stereo.

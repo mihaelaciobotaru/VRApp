@@ -38,17 +38,10 @@ namespace Gvr.Internal {
 
     public abstract void Init();
 
-    public abstract void SetUILayerEnabled(bool enabled);
     public abstract void SetVRModeEnabled(bool enabled);
     public abstract void SetDistortionCorrectionEnabled(bool enabled);
 
-    public abstract void SetSettingsButtonEnabled(bool enabled);
-    public abstract void SetAlignmentMarkerEnabled(bool enabled);
-    public abstract void SetVRBackButtonEnabled(bool enabled);
-    public abstract void SetShowVrBackButtonOnlyInVR(bool only);
-
     public abstract void SetNeckModelScale(float scale);
-    public abstract void SetElectronicDisplayStabilizationEnabled(bool enabled);
 
     public virtual bool SupportsNativeDistortionCorrection(List<string> diagnostics) {
       return true;
@@ -152,7 +145,6 @@ namespace Gvr.Internal {
     protected int leftEyeOrientation;
     protected int rightEyeOrientation;
 
-    public bool triggered;
     public bool tilted;
     public bool profileChanged;
     public bool backButtonPressed;
